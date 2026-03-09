@@ -112,9 +112,10 @@ func (dh *datapathHandler) HandlePacketsFromTunDevice(p *packet.Parsed) filter.R
 	magicIP := p.Dst.Addr()
 	transitIP, err := dh.conn25.ClientTransitIPForMagicIP(magicIP)
 	if err != nil {
-		return filter.Accept
+		// TODO(mzb/fran): Don't drop in all cases. Just Magic IPs in range
+		// that don't have a mapping. Otherwise Accept.
+		return filter.Drop
 	}
-	// _ = transitIP
 	dh.dnatAction(transitIP)(p)
 	return filter.Accept
 
