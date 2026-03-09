@@ -82,18 +82,18 @@ func (t *FlowTable) lookup(k flowtrack.Tuple, want Origin) (FlowData, error) {
 // NewFlowFromTunDevice installs (or overwrites) both the forward and return entries.
 // The forward tuple is tagged as FromTun, and the return tuple is tagged as FromWireguard.
 // If overwriting, it removes the old paired tuple for the forward key to avoid stale reverse mappings.
-func (t *FlowTable) NewFlowFromTunDevice(fwd, ret FlowData) (FlowData, error) {
+func (t *FlowTable) NewFlowFromTunDevice(fwd, ret FlowData) FlowData {
 	return t.newFlow(FromTun, fwd, ret)
 }
 
 // NewFlowFromWireguard installs (or overwrites) both the forward and return entries,
 // but tags the forward tuple as FromWireguard and the return tuple as FromTun.
 // (Whether you *want* to allow installs from this direction is a separate policy question.)
-func (t *FlowTable) NewFlowFromWireguard(fwd, ret FlowData) (FlowData, error) {
+func (t *FlowTable) NewFlowFromWireguard(fwd, ret FlowData) FlowData {
 	return t.newFlow(FromWireguard, fwd, ret)
 }
 
-func (t *FlowTable) newFlow(primaryAllow Origin, fwd, ret FlowData) (FlowData, error) {
+func (t *FlowTable) newFlow(primaryAllow Origin, fwd, ret FlowData) FlowData {
 	t.mu.Lock()
 
 	// If overwriting an existing primary entry, remove its previously-paired mapping so
@@ -113,5 +113,5 @@ func (t *FlowTable) newFlow(primaryAllow Origin, fwd, ret FlowData) (FlowData, e
 	})
 
 	t.mu.Unlock()
-	return fwd, nil
+	return fwd
 }

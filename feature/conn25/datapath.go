@@ -15,21 +15,21 @@ import (
 
 // datapathHandler is the main implementation of DatapathHandler.
 type datapathHandler struct {
-	conn25             Connector
+	ipMapper           IPMapper
 	clientFlowTable    *FlowTable
 	connectorFlowTable *FlowTable
 	logf               logger.Logf
 	debugLogging       bool
 }
 
-type Connector interface {
+type IPMapper interface {
 	ClientTransitIPForMagicIP(netip.Addr) (netip.Addr, error)
 	ConnectorRealIPForTransitIPConnection(netip.Addr, netip.Addr) (netip.Addr, error)
 }
 
-func newDatpathHandler(conn25 *Conn25) *datapathHandler {
+func newDatpathHandler(ipMapper IPMapper) *datapathHandler {
 	return &datapathHandler{
-		conn25:             &Conn25{},
+		ipMapper:           ipMapper,
 		clientFlowTable:    NewFlowTable(0),
 		connectorFlowTable: NewFlowTable(0),
 		debugLogging:       envknob.Bool("TS_CONN25_DATAPATH_DEBUG"),
@@ -110,70 +110,32 @@ func (dh *datapathHandler) HandlePacketsFromTunDevice(p *packet.Parsed) filter.R
 	// The flow was not found in either flow table. Since the packet came in on the
 	// tun device, it can only be a new client flow, or other (non-app-connector) traffic.
 	magicIP := p.Dst.Addr()
-	transitIP, err := dh.conn25.ClientTransitIPForMagicIP(magicIP)
+	transitIP, err := dh.ipMapper.ClientTransitIPForMagicIP(magicIP)
 	if err != nil {
 		// TODO(mzb/fran): Don't drop in all cases. Just Magic IPs in range
 		// that don't have a mapping. Otherwise Accept.
 		return filter.Drop
 	}
-	dh.dnatAction(transitIP)(p)
-	return filter.Accept
 
-	//	entry, err := dh.clientFlowTable.NewFlowFromTunDevice(
-	//		FlowData{
-	//			Tuple:  flowtrack.MakeTuple(p.IPProto, p.Src, p.Dst),
-	//			Action: dh.dnatAction(transitIP),
-	//		},
-	//		FlowData{
-	//			Tuple:  flowtrack.MakeTuple(p.IPProto, netip.AddrPortFrom(transitIP, p.Dst.Port()), p.Src),
-	//			Action: dh.snatAction(magicIP),
-	//		},
-	//	)
-	//	if err != nil {
-	//		return err
-	//	}
-	//	entry.Action(p)
-	//	log.Printf("Post-processing (new) on client to connector: %s", p.String())
-	//	return nil
-	//
-	// default:
-	//
-	//		return err
-	//	}
-	//
-	// log.Printf("Handling packet from tun device: %s", p.String())
-	// // Connector-bound traffic.
-	//
-	//	if dh.dstIPIsMagicIP(p) {
-	//		if err := dh.processClientToConnector(p); err != nil {
-	//			// TODO: log error? return error?
-	//			// Packets with a destination Magic IP, that we don't know
-	//			// what to do with, should be dropped.
-	//			// Perhaps we implement an ICMP error here, while dropping from
-	//			// the original datapath.
-	//			return filter.Drop
-	//		}
-	//		return filter.Accept
-	//	}
-	//
-	// // Return traffic from external application.
-	//
-	//	if dh.selfIsConnector() {
-	//		if err := dh.processConnectorToClient(p); err != nil {
-	//			switch err {
-	//			case nil, FlowNotFoundError:
-	//				// If we don't have a record of the flow, it could be normal
-	//				// traffic. We don't know if it's interesting connector return
-	//				// traffic unless we check the table, since it is not expected
-	//				// to have a Transit IP on it yet.
-	//				return filter.Accept
-	//			default:
-	//				return filter.Drop
-	//			}
-	//		}
-	//	}
-	//
-	// return filter.Accept
+	// This is non-app-connector traffic. Forward along unmodified.
+	if !transitIP.IsValid() {
+		return filter.Accept
+	}
+
+	// This is a new client flow. Install a DNAT action for the outgoing direction,
+	// and an SNAT action for the return direction.
+	entry := dh.clientFlowTable.NewFlowFromTunDevice(
+		FlowData{
+			Tuple:  flowtrack.MakeTuple(p.IPProto, p.Src, p.Dst),
+			Action: dh.dnatAction(transitIP),
+		},
+		FlowData{
+			Tuple:  flowtrack.MakeTuple(p.IPProto, netip.AddrPortFrom(transitIP, p.Dst.Port()), p.Src),
+			Action: dh.snatAction(magicIP),
+		},
+	)
+	entry.Action(p)
+	return filter.Accept
 }
 
 // processClientToConnector consults the flow table to determine which connector to send the packet to,
@@ -214,11 +176,11 @@ func (dh *datapathHandler) processConnectorFromClient(p *packet.Parsed) error {
 		return nil
 	case FlowNotFoundError:
 		transitIP := p.Dst.Addr()
-		realIP, err := dh.conn25.ConnectorRealIPForTransitIPConnection(p.Src.Addr(), transitIP)
+		realIP, err := dh.ipMapper.ConnectorRealIPForTransitIPConnection(p.Src.Addr(), transitIP)
 		if err != nil {
 			return err
 		}
-		entry, err := dh.connectorFlowTable.NewFlowFromWireguard(
+		entry := dh.connectorFlowTable.NewFlowFromWireguard(
 			FlowData{
 				Tuple:  flowtrack.MakeTuple(p.IPProto, p.Src, p.Dst),
 				Action: dh.dnatAction(realIP),
@@ -228,9 +190,6 @@ func (dh *datapathHandler) processConnectorFromClient(p *packet.Parsed) error {
 				Action: dh.snatAction(transitIP),
 			},
 		)
-		if err != nil {
-			return err
-		}
 		entry.Action(p)
 		log.Printf("Post-processing (existing) on connector from client: %s", p.String())
 		return nil
