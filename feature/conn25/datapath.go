@@ -114,7 +114,8 @@ func (dh *datapathHandler) HandlePacketsFromTunDevice(p *packet.Parsed) filter.R
 	if err != nil {
 		return filter.Accept
 	}
-	_ = transitIP
+	// _ = transitIP
+	dh.dnatAction(transitIP)(p)
 	return filter.Accept
 
 	//	entry, err := dh.clientFlowTable.NewFlowFromTunDevice(

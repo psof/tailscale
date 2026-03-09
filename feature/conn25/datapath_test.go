@@ -6,32 +6,50 @@ import (
 	"testing"
 
 	"tailscale.com/net/packet"
+	"tailscale.com/types/ipproto"
 	"tailscale.com/wgengine/filter"
 )
 
 type testConn25 struct {
-	clientTransitIPForMagicIPFn func(magicIP netip.Addr) (netip.Addr, error)
+	clientTransitIPForMagicIPFn           func(netip.Addr) (netip.Addr, error)
+	connectorRealIPForTransitIPConnection func(netip.Addr, netip.Addr) (netip.Addr, error)
 }
 
 func (tc *testConn25) ClientTransitIPForMagicIP(magicIP netip.Addr) (netip.Addr, error) {
+	return tc.clientTransitIPForMagicIPFn(magicIP)
+}
 
+func (tc *testConn25) ConnectorRealIPForTransitIPConnection(srcIP netip.Addr, transitIP netip.Addr) (netip.Addr, error) {
+	return tc.connectorRealIPForTransitIPConnection(srcIP, transitIP)
 }
 
 // test p.dst is a mip and assoc with a tip => should DNAT, return accept
 func TestWoo(t *testing.T) {
-	mip := netip.MustParseAddrPort("10.64.0.1:24")
-	tip := netip.MustParseAddrPort("169.254.0.1:24")
-	dph := datapathHandler{}
+	mip := netip.MustParseAddr("10.64.0.1")
+	tip := netip.MustParseAddr("169.254.0.1")
+	mock := &testConn25{}
+	dph := datapathHandler{
+		conn25:             mock,
+		clientFlowTable:    NewFlowTable(0),
+		connectorFlowTable: NewFlowTable(0),
+	}
+	mock.clientTransitIPForMagicIPFn = func(netip.Addr) (netip.Addr, error) {
+		return tip, nil
+	}
 	p := &packet.Parsed{
-		Dst: mip,
+		Dst:       netip.AddrPortFrom(mip, 1234),
+		Src:       netip.MustParseAddrPort("100.1.2.3:80"),
+		IPProto:   ipproto.TCP,
+		IPVersion: 4,
 	}
 
 	r := dph.HandlePacketsFromTunDevice(p)
 	if r != filter.Accept {
 		t.Fatal("shoulda bin accept")
 	}
-	if p.Dst != tip {
-		t.Fatal("didn't get the dst we thought")
+	want := netip.AddrPortFrom(tip, 1234)
+	if p.Dst != want {
+		t.Fatalf("checking p.Dst: want %v, got %v", want, p.Dst)
 	}
 	fmt.Println(r)
 	fmt.Println(p)
